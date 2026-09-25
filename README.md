@@ -43,6 +43,8 @@ DEPLOYER_PRIVATE_KEY=0x... npm run contracts:deploy
 
 Fund the deployer with **free test OKB** from the [official X Layer faucet](https://web3.okx.com/xlayer/faucet) first. Never commit a private key. Set the resulting contract address as `VITE_XPERKS_CONTRACT`, then run `npm run build`. Vercel builds the static site from `dist`.
 
+After deployment, a test wallet with free OKB can run `XPERKS_CONTRACT=0x... DEPLOYER_PRIVATE_KEY=0x... npm run contracts:seed` to create the example benefit, collect demo shares, and verify a real claim transaction. The command prints explorer links.
+
 ## What was built for OKX Dev Day
 
 The creator, eligibility, and benefit claim flow is new code for X Layer testnet. The product idea draws on my earlier [EquityKey](https://github.com/fawazfff/equitykey) project on Base. xPerks is a separate implementation and uses a new Solidity demo contract, new frontend, and X Layer transactions. EquityKey's existing Base contracts and Supabase service are not used by xPerks.
