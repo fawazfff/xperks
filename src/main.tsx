@@ -1,140 +1,213 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ArrowRight, ArrowSquareOut, CheckCircle, Copy, Gift, Plus, ShieldCheck, SpinnerGap, Wallet } from "@phosphor-icons/react";
-import { createPublicClient, createWalletClient, custom, formatUnits, http, isAddress, parseUnits, stringToHex, type Address, type EIP1193Provider, type Hash } from "viem";
-import { xlayerMainnet, xlayerTestnet } from "./chain";
-import { callPerkAccess, perkAssets, perkIdForSlug } from "./supabase";
+import {
+  ArrowRight,
+  ArrowSquareOut,
+  CheckCircle,
+  Copy,
+  Gift,
+  Plus,
+  ShieldCheck,
+  SpinnerGap,
+  Wallet,
+} from "@phosphor-icons/react";
+import {
+  createPublicClient,
+  createWalletClient,
+  custom,
+  decodeEventLog,
+  formatUnits,
+  http,
+  isAddress,
+  parseUnits,
+  stringToHex,
+  type Abi,
+  type Address,
+  type EIP1193Provider,
+  type Hash,
+} from "viem";
+import artifact from "../artifacts/XPerksDemo.json";
+import { xlayerTestnet } from "./chain";
+import {
+  createCampaign,
+  getActiveContract,
+  getCampaign,
+  getDashboard,
+  listCampaigns,
+  unlockCampaign,
+  updateCampaignDestination,
+  type Campaign,
+} from "./supabase";
 import "./styles.css";
 import "./redesign.css";
 import "./polish.css";
 
-const CONTRACT = (import.meta.env.VITE_XPERKS_CONTRACT || "0x56bdbf41ab0eb0fa450dbe3774504b09a034db05") as Address;
 const RPC = import.meta.env.VITE_XLAYER_RPC || "https://testrpc.xlayer.tech/terigon";
 const EXPLORER = "https://www.okx.com/web3/explorer/xlayer-test";
+const client = createPublicClient({ chain: xlayerTestnet, transport: http(RPC) });
+
 const abi = [
   { type: "function", name: "benefitCount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
-  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] },
-  { type: "function", name: "receivedDemoShares", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bool" }] },
+  {
+    type: "function",
+    name: "getBenefit",
+    stateMutability: "view",
+    inputs: [{ type: "uint256" }],
+    outputs: [{
+      type: "tuple",
+      components: [
+        { name: "creator", type: "address" },
+        { name: "title", type: "string" },
+        { name: "description", type: "string" },
+        { name: "asset", type: "string" },
+        { name: "minimum", type: "uint256" },
+        { name: "active", type: "bool" },
+      ],
+    }],
+  },
+  { type: "function", name: "balanceOfAsset", stateMutability: "view", inputs: [{ type: "string" }, { type: "address" }], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "receivedDemoAsset", stateMutability: "view", inputs: [{ type: "string" }, { type: "address" }], outputs: [{ type: "bool" }] },
   { type: "function", name: "hasClaimed", stateMutability: "view", inputs: [{ type: "uint256" }, { type: "address" }], outputs: [{ type: "bool" }] },
-  { type: "function", name: "getBenefit", stateMutability: "view", inputs: [{ type: "uint256" }], outputs: [{ type: "tuple", components: [{ name: "creator", type: "address" }, { name: "title", type: "string" }, { name: "description", type: "string" }, { name: "reward", type: "string" }, { name: "minimum", type: "uint256" }, { name: "active", type: "bool" }] }] },
-  { type: "function", name: "claimDemoShares", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { type: "function", name: "isSupportedAsset", stateMutability: "pure", inputs: [{ type: "string" }], outputs: [{ type: "bool" }] },
+  { type: "function", name: "claimDemoAsset", stateMutability: "nonpayable", inputs: [{ type: "string" }], outputs: [] },
   { type: "function", name: "claimBenefit", stateMutability: "nonpayable", inputs: [{ type: "uint256" }], outputs: [] },
   { type: "function", name: "createBenefit", stateMutability: "nonpayable", inputs: [{ type: "string" }, { type: "string" }, { type: "string" }, { type: "uint256" }], outputs: [{ type: "uint256" }] },
-  { type: "event", name: "BenefitCreated", inputs: [{ name: "id", type: "uint256", indexed: true }, { name: "creator", type: "address", indexed: true }, { name: "minimum", type: "uint256", indexed: false }] },
+  {
+    type: "event",
+    name: "BenefitCreated",
+    inputs: [
+      { name: "id", type: "uint256", indexed: true },
+      { name: "creator", type: "address", indexed: true },
+      { name: "asset", type: "string", indexed: false },
+      { name: "minimum", type: "uint256", indexed: false },
+    ],
+  },
 ] as const;
 
-type Benefit = { id: bigint; creator: Address; title: string; description: string; reward: string; minimum: bigint; active: boolean; asset?: string };
-type BenefitMeta = { asset: string; destination: string };
-type WalletProvider = EIP1193Provider & { on?: (event: string, callback: (...args: unknown[]) => void) => void; removeListener?: (event: string, callback: (...args: unknown[]) => void) => void };
-declare global { interface Window { ethereum?: WalletProvider } }
-const client = createPublicClient({ chain: xlayerTestnet, transport: http(RPC) });
-const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
-const amount = (value: bigint) => Number(formatUnits(value, 18)).toLocaleString(undefined, { maximumFractionDigits: 3 });
-const slugify = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64);
-const validContract = /^0x[0-9a-fA-F]{40}$/.test(CONTRACT);
-const REAL_TSLA = "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0" as Address;
-const mainnetClient = createPublicClient({ chain: xlayerMainnet, transport: http("https://rpc.xlayer.tech") });
-const DEMO_ASSETS = [
-  { symbol: "dTSLA", name: "Tesla" },
-  { symbol: "dNVDA", name: "NVIDIA" },
-  { symbol: "dCOIN", name: "Coinbase" },
-  { symbol: "dMSTR", name: "Strategy" },
-];
-function benefitMeta(benefit: Benefit): BenefitMeta {
-  try {
-    const parsed = JSON.parse(benefit.reward) as Partial<BenefitMeta>;
-    if (parsed.asset && parsed.destination) return { asset: benefit.asset || parsed.asset, destination: parsed.destination };
-  } catch { /* Legacy benefit */ }
-  return { asset: benefit.asset || "dTSLA", destination: "" };
+type Benefit = {
+  creator: Address;
+  title: string;
+  description: string;
+  asset: string;
+  minimum: bigint;
+  active: boolean;
+};
+
+type WalletProvider = EIP1193Provider & {
+  on?: (event: string, callback: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, callback: (...args: unknown[]) => void) => void;
+};
+
+declare global {
+  interface Window {
+    ethereum?: WalletProvider;
+  }
 }
 
-function RealStockCheck({ connected }: { connected: Address | null }) {
-  const [wallet, setWallet] = useState("");
-  const [result, setResult] = useState<string | null>(null);
-  const [working, setWorking] = useState(false);
-  const [checkError, setCheckError] = useState("");
-  async function check(event: React.FormEvent) {
-    event.preventDefault(); setCheckError(""); setResult(null);
-    const target = wallet.trim() || connected || "";
-    if (!isAddress(target)) { setCheckError("Enter a valid EVM wallet address."); return; }
-    setWorking(true);
-    try {
-      const value = await mainnetClient.readContract({ address: REAL_TSLA, abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }], functionName: "balanceOf", args: [target] });
-      setResult(`${amount(value)} TSLAx`);
-    } catch { setCheckError("Could not reach X Layer mainnet. Try again in a moment."); }
-    finally { setWorking(false); }
-  }
-  return <section className="real-check">
-<div>
-<p className="intro-tag">Real asset check</p>
-<h2>See a real xStock balance.</h2>
-<p>Enter a wallet to read its Tesla xStock balance directly from the TSLAx contract on X Layer mainnet. This check is read-only.</p>
-<a href={`https://www.oklink.com/x-layer/evm/token/${REAL_TSLA}`} target="_blank" rel="noreferrer">View TSLAx contract <ArrowSquareOut size={15} />
-</a>
-</div>
-<form onSubmit={check}>
-<label htmlFor="real-wallet">Wallet address</label>
-<div>
-<input id="real-wallet" placeholder={connected || "0x..."} value={wallet} onChange={(event) => setWallet(event.target.value)} />
-<button disabled={working}>{working ? "Checking…" : "Check balance"}</button>
-</div>{result && <p className="check-result">
-<CheckCircle weight="fill" /> X Layer mainnet balance: <strong>{result}</strong>
-</p>}{checkError && <p className="check-error" role="alert">{checkError}</p>}<small>Reading the balance is free. No wallet connection or transaction is required.</small>
-</form>
-</section>;
+const DEMO_ASSETS = [
+  { symbol: "dTSLA", ticker: "TSLA", name: "Tesla" },
+  { symbol: "dNVDA", ticker: "NVDA", name: "NVIDIA" },
+  { symbol: "dAAPL", ticker: "AAPL", name: "Apple" },
+  { symbol: "dCOIN", ticker: "COIN", name: "Coinbase" },
+  { symbol: "dMSFT", ticker: "MSFT", name: "Microsoft" },
+  { symbol: "dAMZN", ticker: "AMZN", name: "Amazon" },
+  { symbol: "dMSTR", ticker: "MSTR", name: "Strategy" },
+] as const;
+
+type View = "home" | "explore" | "create" | "how" | "faq" | "faucet" | "dashboard";
+
+const short = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
+const formatAmount = (value: bigint) => Number(formatUnits(value, 18)).toLocaleString(undefined, { maximumFractionDigits: 4 });
+const bytecode = `0x${artifact.evm.bytecode.object}` as `0x${string}`;
+const compiledAbi = artifact.abi as Abi;
+
+function viewForPath(path: string): View {
+  if (path === "/create") return "create";
+  if (path === "/explore") return "explore";
+  if (path === "/how-it-works") return "how";
+  if (path === "/faq") return "faq";
+  if (path === "/demo-stocks") return "faucet";
+  if (path === "/dashboard") return "dashboard";
+  return "home";
 }
 
 function App() {
   const [address, setAddress] = useState<Address | null>(null);
-  const [benefits, setBenefits] = useState<Benefit[]>([]);
-  const [selected, setSelected] = useState<Benefit | null>(null);
-  const [balance, setBalance] = useState(0n);
-  const [received, setReceived] = useState(false);
-  const [claimed, setClaimed] = useState(false);
-  const initialPath = window.location.pathname;
-  const [view, setView] = useState<"home" | "explore" | "create" | "how" | "faq">(
-    initialPath === "/create" ? "create" : initialPath === "/explore" ? "explore" : initialPath === "/how-it-works" ? "how" : initialPath === "/faq" ? "faq" : "home"
-  );
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [selected, setSelected] = useState<Campaign | null>(null);
+  const [benefit, setBenefit] = useState<Benefit | null>(null);
+  const [view, setView] = useState<View>(viewForPath(window.location.pathname));
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [tx, setTx] = useState<Hash | null>(null);
   const [createdLink, setCreatedLink] = useState("");
   const [unlockedUrl, setUnlockedUrl] = useState("");
   const [copied, setCopied] = useState(false);
+  const [balance, setBalance] = useState(0n);
+  const [received, setReceived] = useState(false);
+  const [claimed, setClaimed] = useState(false);
+  const [activeContract, setActiveContract] = useState<Address | null>(null);
+  const [faucetAsset, setFaucetAsset] = useState("dTSLA");
+  const [faucetContract, setFaucetContract] = useState<Address | null>(null);
+  const [dashboardCampaigns, setDashboardCampaigns] = useState<Campaign[]>([]);
+
   const [title, setTitle] = useState("Tesla Holder Pack");
-  const [description, setDescription] = useState("A thank-you for people holding demo Tesla shares.");
-  const [reward, setReward] = useState("https://t.me/xperks");
+  const [description, setDescription] = useState("A private reward for wallets holding demo Tesla shares.");
+  const [destination, setDestination] = useState("https://t.me/xperks");
   const [asset, setAsset] = useState("dTSLA");
   const [minimum, setMinimum] = useState("0.01");
 
-  async function loadBenefits() {
-    if (!validContract) return;
-    const count = await client.readContract({ address: CONTRACT, abi, functionName: "benefitCount" });
-    const slugMatch = window.location.pathname.match(/^\/perk\/([a-z0-9-]+)\/?$/);
-    const storedId = slugMatch ? await perkIdForSlug(slugMatch[1]).catch(() => null) : null;
-    const ids = Array.from({ length: Number(count > 12n ? 12n : count) }, (_, i) => count - BigInt(i));
-    if (storedId && !ids.includes(storedId)) ids.push(storedId);
-    const assetMap = await perkAssets(ids);
-    const rows = await Promise.all(ids.map(async (id) => ({ id, ...await client.readContract({ address: CONTRACT, abi, functionName: "getBenefit", args: [id] }), asset: assetMap[id.toString()] })));
-    setBenefits(rows.filter((row) => row.active));
-    const idMatch = window.location.pathname.match(/^\/benefit\/(\d+)\/?$/);
-    if (idMatch) setSelected(rows.find((row) => row.id === BigInt(idMatch[1])) || null);
-    if (slugMatch) setSelected(rows.find((row) => slugify(row.title) === slugMatch[1] || `${slugify(row.title)}-${row.id}` === slugMatch[1]) || null);
+  const currentContract = selected?.contract_address || faucetContract || activeContract;
+
+  async function refreshCampaigns() {
+    const rows = await listCampaigns();
+    setCampaigns(rows);
+    const live = await getActiveContract().catch(() => null);
+    if (live && isAddress(live)) setActiveContract(live);
   }
 
-  async function loadWallet(nextAddress: Address, benefitId?: bigint) {
-    if (!validContract) return;
-    const [shares, gotShares] = await Promise.all([
-      client.readContract({ address: CONTRACT, abi, functionName: "balanceOf", args: [nextAddress] }),
-      client.readContract({ address: CONTRACT, abi, functionName: "receivedDemoShares", args: [nextAddress] }),
+  async function loadCampaignRoute(path = window.location.pathname) {
+    const match = path.match(/^\/c\/(\d+)\/?$/);
+    if (!match) {
+      setSelected(null);
+      setBenefit(null);
+      return false;
+    }
+    const row = await getCampaign(Number(match[1]));
+    setSelected(row);
+    const onchain = await client.readContract({
+      address: row.contract_address,
+      abi,
+      functionName: "getBenefit",
+      args: [BigInt(row.onchain_benefit_id)],
+    });
+    setBenefit(onchain as Benefit);
+    return true;
+  }
+
+  async function readWalletState(account: Address, campaign = selected) {
+    if (!campaign) return;
+    const contract = campaign.contract_address;
+    const [nextBalance, nextReceived, nextClaimed] = await Promise.all([
+      client.readContract({ address: contract, abi, functionName: "balanceOfAsset", args: [campaign.asset_symbol, account] }),
+      client.readContract({ address: contract, abi, functionName: "receivedDemoAsset", args: [campaign.asset_symbol, account] }),
+      client.readContract({ address: contract, abi, functionName: "hasClaimed", args: [BigInt(campaign.onchain_benefit_id), account] }),
     ]);
-    setBalance(shares);
-    setReceived(gotShares);
-    if (benefitId) setClaimed(await client.readContract({ address: CONTRACT, abi, functionName: "hasClaimed", args: [benefitId, nextAddress] }));
+    setBalance(nextBalance);
+    setReceived(nextReceived);
+    setClaimed(nextClaimed);
   }
 
   useEffect(() => {
-    loadBenefits().catch(() => setError("Could not reach X Layer testnet. Try refreshing the page."));
+    refreshCampaigns().catch(() => setError("Could not load xPerks campaigns. Try refreshing."));
+    loadCampaignRoute().catch(() => setError("This campaign could not be loaded."));
+
+    const params = new URLSearchParams(window.location.search);
+    const contract = params.get("contract");
+    const requestedAsset = params.get("asset");
+    if (contract && isAddress(contract)) setFaucetContract(contract);
+    if (requestedAsset && DEMO_ASSETS.some((item) => item.symbol === requestedAsset)) setFaucetAsset(requestedAsset);
+
     const provider = window.ethereum;
     if (!provider) return;
     provider.request({ method: "eth_accounts" }).then((accounts) => {
@@ -147,329 +220,569 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (address) loadWallet(address, selected?.id).catch(() => setError("Could not read this wallet on X Layer testnet."));
-    else { setBalance(0n); setReceived(false); setClaimed(false); }
+    if (address && selected) readWalletState(address, selected).catch(() => setError("Could not read this wallet on X Layer testnet."));
+    if (!address) {
+      setBalance(0n);
+      setReceived(false);
+      setClaimed(false);
+    }
   }, [address, selected?.id]);
 
-  function openBenefit(benefit: Benefit) {
-    setSelected(benefit); setError(""); setTx(null); setCopied(false); setUnlockedUrl("");
-    window.history.pushState({}, "", `/perk/${slugify(benefit.title)}`);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-  function goHome() {
-    setSelected(null); setView("home"); setError(""); setTx(null); setCreatedLink("");
-    window.history.pushState({}, "", "/");
-  }
-  function navigate(next: typeof view, path: string) {
-    setSelected(null); setView(next); setError(""); setTx(null); window.history.pushState({}, "", path); window.scrollTo({ top: 0, behavior: "smooth" });
-  }
   useEffect(() => {
     const onPop = () => {
-      const path = window.location.pathname;
-      const match = path.match(/^\/perk\/([a-z0-9-]+)\/?$/);
-      setSelected(match ? benefits.find((b) => slugify(b.title) === match[1] || `${slugify(b.title)}-${b.id}` === match[1]) || null : null);
-      if (!match) setView(path === "/create" ? "create" : path === "/explore" ? "explore" : path === "/how-it-works" ? "how" : path === "/faq" ? "faq" : "home");
+      setView(viewForPath(window.location.pathname));
+      loadCampaignRoute().catch(() => setError("This campaign could not be loaded."));
     };
-    window.addEventListener("popstate", onPop); return () => window.removeEventListener("popstate", onPop);
-  }, [benefits]);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
 
-  async function connect() {
-    setError("");
-    if (!window.ethereum) { setError("Open this page in an EVM wallet browser, such as MetaMask or OKX Wallet, to connect."); return; }
-    try {
-      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" }) as Address[];
-      if (accounts[0]) setAddress(accounts[0]);
-      await ensureChain();
-    } catch (cause) { setError(errorText(cause)); }
-  }
   async function ensureChain() {
     const provider = window.ethereum;
     if (!provider) throw new Error("No browser wallet found.");
     const chainId = await provider.request({ method: "eth_chainId" });
     if (typeof chainId === "string" && Number.parseInt(chainId, 16) === 1952) return;
-    try { await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7a0" }] }); }
-    catch (cause) {
+    try {
+      await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7a0" }] });
+    } catch (cause) {
       const walletError = cause as { code?: number; message?: string; data?: { originalError?: { code?: number; message?: string } } };
       const code = walletError.code ?? walletError.data?.originalError?.code;
       const message = `${walletError.message || ""} ${walletError.data?.originalError?.message || ""}`;
       if (code !== 4902 && code !== -32603 && !/unrecognized|unknown chain|not added/i.test(message)) throw cause;
-      await provider.request({ method: "wallet_addEthereumChain", params: [{ chainId: "0x7a0", chainName: "X Layer Testnet", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 }, rpcUrls: [RPC], blockExplorerUrls: [EXPLORER] }] });
+      await provider.request({
+        method: "wallet_addEthereumChain",
+        params: [{
+          chainId: "0x7a0",
+          chainName: "X Layer Testnet",
+          nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+          rpcUrls: [RPC],
+          blockExplorerUrls: [EXPLORER],
+        }],
+      });
       await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7a0" }] });
     }
   }
-  async function signAccess(message: string, account: Address) {
+
+  async function getAccount() {
+    if (!window.ethereum) throw new Error("Open xPerks in MetaMask, OKX Wallet, or another EVM wallet browser.");
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" }) as Address[];
+    const account = accounts[0];
+    if (!account) throw new Error("Connect a wallet to continue.");
+    setAddress(account);
+    await ensureChain();
+    return account;
+  }
+
+  async function connect() {
+    setError("");
+    try {
+      await getAccount();
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  }
+
+  async function signedPayload(action: string, resource: string, account: Address) {
     if (!window.ethereum) throw new Error("No browser wallet found.");
-    return await window.ethereum.request({ method: "personal_sign", params: [stringToHex(message), account] }) as string;
+    const issuedAt = Math.floor(Date.now() / 60_000);
+    const message = `xPerks wallet proof\nAction: ${action}\nWallet: ${account.toLowerCase()}\nResource: ${resource}\nIssued minute: ${issuedAt}`;
+    const signature = await window.ethereum.request({
+      method: "personal_sign",
+      params: [stringToHex(message), account],
+    }) as string;
+    return { wallet: account, issuedAt, signature };
   }
-  async function revealAccess(targetAddress = address, targetBenefit = selected) {
-    if (!targetBenefit || !targetAddress) return;
-    setBusy("access"); setError("");
-    try {
-      const message = `xPerks access request\nBenefit ID: ${targetBenefit.id}`;
-      const signature = await signAccess(message, targetAddress);
-      const result = await callPerkAccess({ action: "unlock", benefitId: targetBenefit.id.toString(), signature });
-      if (!result.destination) throw new Error("This creator has not added an access destination yet.");
-      setUnlockedUrl(result.destination);
-    } catch (cause) { setError(errorText(cause)); }
-    finally { setBusy(""); }
+
+  function navigate(next: View, path: string) {
+    setSelected(null);
+    setBenefit(null);
+    setView(next);
+    setError("");
+    setTx(null);
+    setCreatedLink("");
+    setUnlockedUrl("");
+    window.history.pushState({}, "", path);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
-  async function write(functionName: "claimDemoShares" | "claimBenefit" | "createBenefit", args?: readonly [bigint] | readonly [string, string, string, bigint]) {
-    setError(""); setTx(null); setBusy(functionName);
+
+  function openCampaign(campaign: Campaign) {
+    setSelected(campaign);
+    setBenefit(null);
+    setView("home");
+    setError("");
+    setTx(null);
+    setUnlockedUrl("");
+    window.history.pushState({}, "", `/c/${campaign.id}`);
+    client.readContract({
+      address: campaign.contract_address,
+      abi,
+      functionName: "getBenefit",
+      args: [BigInt(campaign.onchain_benefit_id)],
+    }).then((row) => setBenefit(row as Benefit)).catch(() => setError("Could not read this campaign on X Layer."));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function goHome() {
+    navigate("home", "/");
+  }
+
+  async function writeCampaignAction(functionName: "claimDemoAsset" | "claimBenefit", args: readonly [string] | readonly [bigint]) {
+    if (!selected) return;
+    setError("");
+    setTx(null);
+    setBusy(functionName);
     try {
-      if (!validContract) throw new Error("The X Layer demo contract has not been deployed yet.");
-      if (!window.ethereum) throw new Error("Open this page in an EVM wallet browser to continue.");
-      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" }) as Address[];
-      const account = accounts[0];
-      if (!account) throw new Error("Connect a wallet to continue.");
-      setAddress(account);
-      await ensureChain();
+      const account = await getAccount();
+      if (!window.ethereum) throw new Error("No wallet found.");
       const wallet = createWalletClient({ chain: xlayerTestnet, transport: custom(window.ethereum), account });
-      let hash: Hash;
-      if (functionName === "createBenefit") hash = await wallet.writeContract({ address: CONTRACT, abi, functionName, args: args as [string, string, string, bigint] });
-      else if (functionName === "claimBenefit") hash = await wallet.writeContract({ address: CONTRACT, abi, functionName, args: args as [bigint] });
-      else hash = await wallet.writeContract({ address: CONTRACT, abi, functionName });
-      setTx(hash); setBusy("confirming");
-      const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90000 });
-      if (receipt.status !== "success") throw new Error("The transaction failed. View it in the explorer for details.");
-      if (functionName === "createBenefit") {
-        const count = await client.readContract({ address: CONTRACT, abi, functionName: "benefitCount" });
-        const latest = await client.readContract({ address: CONTRACT, abi, functionName: "getBenefit", args: [count] });
-        const destination = reward.trim();
-        const message = `xPerks creator authorization\nBenefit ID: ${count}\nAsset: ${asset}\nDestination: ${destination}`;
-        const signature = await signAccess(message, account);
-        const result = await callPerkAccess({ action: "create", benefitId: count.toString(), asset, destination, signature });
-        setCreatedLink(`${window.location.origin}${result.path || `/perk/${slugify(latest.title)}`}`);
-        await loadBenefits();
-      } else {
-        await loadWallet(account, selected?.id);
-        await loadBenefits();
-        if (functionName === "claimBenefit") await revealAccess(account, selected);
-      }
-    } catch (cause) { setError(errorText(cause)); }
-    finally { setBusy(""); }
+      const hash = functionName === "claimDemoAsset"
+        ? await wallet.writeContract({ address: selected.contract_address, abi, functionName, args: args as [string] })
+        : await wallet.writeContract({ address: selected.contract_address, abi, functionName, args: args as [bigint] });
+      setTx(hash);
+      setBusy("confirming");
+      const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 });
+      if (receipt.status !== "success") throw new Error("The X Layer transaction failed.");
+      await readWalletState(account, selected);
+      if (functionName === "claimBenefit") await revealAccess(account, selected);
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
   }
-  async function copy(value: string) { await navigator.clipboard.writeText(value); setCopied(true); }
-  const status = busy === "confirming" ? "Waiting for X Layer confirmation…" : busy ? "Approve in your wallet…" : "";
+
+  async function revealAccess(account = address, campaign = selected) {
+    if (!account || !campaign) return;
+    setBusy("unlock");
+    setError("");
+    try {
+      await ensureChain();
+      const proof = await signedPayload("unlock", String(campaign.id), account);
+      const result = await unlockCampaign({ campaignId: campaign.id, ...proof });
+      setUnlockedUrl(result.destination);
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function deployV2(account: Address) {
+    if (!window.ethereum) throw new Error("No wallet found.");
+    const wallet = createWalletClient({ chain: xlayerTestnet, transport: custom(window.ethereum), account });
+    setBusy("deploy");
+    const hash = await wallet.deployContract({ abi: compiledAbi, bytecode });
+    setTx(hash);
+    setBusy("confirming");
+    const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 });
+    if (receipt.status !== "success" || !receipt.contractAddress) throw new Error("The demo contract deployment failed.");
+    setActiveContract(receipt.contractAddress);
+    return receipt.contractAddress;
+  }
+
+  async function resolveDemoContract(account: Address) {
+    const candidate = activeContract || await getActiveContract().catch(() => null);
+    if (candidate && isAddress(candidate)) {
+      const supported = await client.readContract({
+        address: candidate,
+        abi,
+        functionName: "isSupportedAsset",
+        args: [asset],
+      }).catch(() => false);
+      if (supported) return candidate;
+    }
+    return deployV2(account);
+  }
+
+  async function publishCampaign(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    setTx(null);
+    setCreatedLink("");
+    setBusy("prepare");
+    try {
+      const target = new URL(destination.trim());
+      if (target.protocol !== "https:") throw new Error("Use a secure HTTPS destination.");
+      const minimumValue = parseUnits(minimum, 18);
+      if (minimumValue <= 0n || minimumValue > parseUnits("1", 18)) throw new Error("Choose an amount above 0 and no more than 1 demo share.");
+
+      const account = await getAccount();
+      const contract = await resolveDemoContract(account);
+      if (!window.ethereum) throw new Error("No wallet found.");
+      const wallet = createWalletClient({ chain: xlayerTestnet, transport: custom(window.ethereum), account });
+
+      setBusy("createBenefit");
+      const hash = await wallet.writeContract({
+        address: contract,
+        abi,
+        functionName: "createBenefit",
+        args: [title.trim(), description.trim(), asset, minimumValue],
+      });
+      setTx(hash);
+      setBusy("confirming");
+      const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 });
+      if (receipt.status !== "success") throw new Error("The campaign transaction failed.");
+
+      let benefitId: bigint | null = null;
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== contract.toLowerCase()) continue;
+        try {
+          const decoded = decodeEventLog({ abi, data: log.data, topics: log.topics });
+          if (decoded.eventName === "BenefitCreated") {
+            benefitId = (decoded.args as { id: bigint }).id;
+            break;
+          }
+        } catch {
+          // Ignore unrelated logs.
+        }
+      }
+      if (!benefitId) throw new Error("The campaign was created, but its ID could not be read.");
+
+      const proof = await signedPayload("create", `${contract.toLowerCase()}:${benefitId}`, account);
+      const result = await createCampaign({
+        contract,
+        benefitId: Number(benefitId),
+        destination: destination.trim(),
+        txHash: hash,
+        ...proof,
+      });
+      const link = `${window.location.origin}${result.path}`;
+      setCreatedLink(link);
+      setActiveContract(contract);
+      await refreshCampaigns();
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function claimFromFaucet(symbol: string) {
+    setError("");
+    setTx(null);
+    setBusy(`faucet-${symbol}`);
+    try {
+      const account = await getAccount();
+      const contract = faucetContract || activeContract || await getActiveContract();
+      if (!contract || !isAddress(contract)) throw new Error("Create a campaign first so the demo-stock faucet knows which test contract to use.");
+      setFaucetContract(contract);
+      if (!window.ethereum) throw new Error("No wallet found.");
+      const wallet = createWalletClient({ chain: xlayerTestnet, transport: custom(window.ethereum), account });
+      const already = await client.readContract({ address: contract, abi, functionName: "receivedDemoAsset", args: [symbol, account] }).catch(() => false);
+      if (already) throw new Error(`This wallet already received its free ${symbol} demo share from this test contract.`);
+      const hash = await wallet.writeContract({ address: contract, abi, functionName: "claimDemoAsset", args: [symbol] });
+      setTx(hash);
+      setBusy("confirming");
+      const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90_000 });
+      if (receipt.status !== "success") throw new Error("The demo-stock transaction failed.");
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openDashboard() {
+    setError("");
+    setBusy("dashboard");
+    try {
+      const account = await getAccount();
+      const proof = await signedPayload("dashboard", "dashboard", account);
+      setDashboardCampaigns(await getDashboard(proof));
+      navigate("dashboard", "/dashboard");
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function changeDestination(campaign: Campaign) {
+    const next = window.prompt("New private HTTPS destination");
+    if (!next) return;
+    setBusy("manage");
+    setError("");
+    try {
+      const parsed = new URL(next);
+      if (parsed.protocol !== "https:") throw new Error("Use a secure HTTPS destination.");
+      const account = await getAccount();
+      const proof = await signedPayload("manage", String(campaign.id), account);
+      await updateCampaignDestination(campaign.id, { destination: next, ...proof });
+    } catch (cause) {
+      setError(errorText(cause));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function copy(value: string) {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  }
+
+  const status = busy === "confirming"
+    ? "Waiting for X Layer confirmation…"
+    : busy === "deploy"
+      ? "Approve the one-time demo contract deployment…"
+      : busy
+        ? "Approve in your wallet…"
+        : "";
 
   return <div className="app-shell">
     <header className="site-header">
-<button className="brand" onClick={goHome} aria-label="xPerks home">
-<img src="/logo.svg" alt="" /> <span>xPerks</span>
-</button>
-<nav>
-<button onClick={() => navigate("explore", "/explore")}>Explore</button>
-<button onClick={() => navigate("how", "/how-it-works")}>How it works</button>
-<button onClick={() => navigate("faq", "/faq")}>FAQ</button>
-</nav>
-<div className="header-actions">
-<button className="header-create" onClick={() => navigate("create", "/create")}>Create perk</button>
-<button className="wallet-button" onClick={connect}>
-<Wallet size={18} /> {address ? short(address) : "Connect"}</button>
-</div>
-</header>
-    {!validContract && <div className="setup-banner">The X Layer contract is being connected. Creation and claims will be available after deployment.</div>}
-    {selected ? <main className="detail-main">
-<button className="back-link" onClick={() => navigate("explore", "/explore")}>← Explore perks</button>
-<div className="detail-grid">
-<article className="ticket detail-ticket">
-<div className="ticket-top">
-<span className="stock-mark">{benefitMeta(selected).asset}</span>
-<span className="testnet-pill">X Layer testnet</span>
-</div>
-<div className="ticket-content">
-<p className="mini-label">Holder benefit #{selected.id.toString()}</p>
-<h1>{selected.title}</h1>
-<p>{selected.description}</p>
-</div>
-<div className="ticket-bottom">
-<div>
-<small>Hold at least</small>
-<strong>{amount(selected.minimum)} {benefitMeta(selected).asset}</strong>
-</div>
-<Gift size={30} />
-</div>
-</article>
-<section className="claim-panel">
-<div className="access-heading"><span className="panel-icon"><ShieldCheck size={25} /></span><span>X Layer access check</span></div>
-<h2>{claimed ? "The door is open." : "Your wallet is the key."}</h2>
-<p>{claimed ? "Your ownership was verified onchain. Continue to the private destination." : `This access pass opens for wallets holding ${amount(selected.minimum)} ${benefitMeta(selected).asset}.`}</p>
-<div className="wallet-snapshot"><div><small>Connected wallet</small><strong>{address ? short(address) : "Not connected"}</strong></div><div><small>Demo balance</small><strong>{address ? `${amount(balance)} ${benefitMeta(selected).asset}` : "—"}</strong></div></div>
-{!address ? <button className="access-action" onClick={connect}><Wallet size={19} /> Connect wallet</button> : !received ? <button className="access-action" onClick={() => write("claimDemoShares")} disabled={!!busy}>Collect demo {benefitMeta(selected).asset}</button> : !claimed ? <button className="access-action" onClick={() => write("claimBenefit", [selected.id])} disabled={!!busy || balance < selected.minimum}><ShieldCheck size={19} /> Verify ownership</button> : unlockedUrl ? <a className="access-action unlocked" href={unlockedUrl} target="_blank" rel="noreferrer">Open your access <ArrowSquareOut size={18} /></a> : <button className="access-action unlocked" onClick={() => revealAccess()} disabled={!!busy}>Reveal my access</button>}
-{!received && address && <p className="gas-help">You need free test OKB for the demo transaction. <a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Open faucet <ArrowSquareOut size={13} /></a></p>}
-{claimed && <div className="verified-line"><CheckCircle weight="fill" /> Verified on X Layer</div>}</section>
-</div>
-<div className="proof-row">
-<span>Contract: <a href={`${EXPLORER}/address/${CONTRACT}`} target="_blank" rel="noreferrer">{validContract ? short(CONTRACT) : "Pending deployment"}</a>
-</span>
-<button onClick={() => copy(window.location.href)}>
-<Copy size={15} /> {copied ? "Copied" : "Copy benefit link"}</button>
-</div>
-</main> : view === "create" ? <main className="create-main">
-<button className="back-link" onClick={goHome}>← Explore benefits</button>
-<div className="create-grid">
-<div>
-<p className="intro-tag">For creators</p>
-<h1>Give holders a reason to stay.</h1>
-<p className="lead">Publish an ownership rule, share the page, and let visitors prove eligibility from their wallet.</p>
-<div className="note-card">
-<ShieldCheck size={23} />
-<div>
-<strong>A real testnet transaction</strong>
-<p>Your rule is stored in the X Layer demo contract. You will need free test OKB to publish.</p>
-<a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Open faucet <ArrowSquareOut size={14} />
-</a>
-</div>
-</div>
-</div>
-<form className="create-form" onSubmit={(event) => { event.preventDefault(); try { const value = parseUnits(minimum, 18); const destination = new URL(reward.trim()); if (destination.protocol !== "https:") throw new Error("Use a secure HTTPS destination."); if (value <= 0n || value > parseUnits("1", 18)) throw new Error("Choose an amount above 0 and no more than 1 demo share."); void write("createBenefit", [title.trim(), description.trim(), "Private access stored by xPerks", value]); } catch (cause) { setError(errorText(cause)); } }}>
-<label>Benefit name<input required minLength={3} maxLength={80} value={title} onChange={(e) => setTitle(e.target.value)} />
-</label>
-<label>What does the holder get?<textarea required maxLength={320} rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
-</label>
-<div className="form-row">
-<label>Required demo share<select value={asset} onChange={(e) => setAsset(e.target.value)}>{DEMO_ASSETS.map((item) => <option value={item.symbol} key={item.symbol}>{item.name} · {item.symbol}</option>)}</select>
-</label>
-<label>Minimum balance<input required type="number" min="0.000001" max="1" step="any" value={minimum} onChange={(e) => setMinimum(e.target.value)} />
-</label>
-</div>
-<label>Access destination<input required type="url" maxLength={360} placeholder="https://t.me/your-group" value={reward} onChange={(e) => setReward(e.target.value)} />
-<small>Telegram, Google Drive, Notion, Discord invites, or any secure HTTPS page.</small>
-</label>
-<button className="primary wide" type="submit" disabled={!!busy || !validContract}>{status ? <SpinnerGap className="spin" size={19} /> : <Plus size={18} />} {status || "Publish benefit"}</button>{createdLink && <div className="created-box">
-<CheckCircle weight="fill" />
-<div>
-<strong>Benefit published</strong>
-<p>
-<a href={createdLink}>{createdLink}</a>
-</p>
-<button type="button" onClick={() => copy(createdLink)}>{copied ? "Copied" : "Copy link"}</button>
-</div>
-</div>}</form>
-</div>
-</main> : view === "explore" ? <ExplorePage benefits={benefits} openBenefit={openBenefit} create={() => navigate("create", "/create")} /> : view === "how" ? <HowPage create={() => navigate("create", "/create")} /> : view === "faq" ? <FaqPage /> : <main>
-<section className="hero">
-<div className="hero-copy">
-<p className="intro-tag">
-<span className="live-dot" /> Built on X Layer testnet</p>
-<h1>Make ownership<br />worth holding.</h1>
-<p>Turn tokenized stock ownership into something people can use. Create a benefit, share it, and let a wallet prove who qualifies.</p>
-<div className="hero-actions">
-<button className="primary" onClick={() => { setView("create"); window.history.pushState({}, "", "/create"); }}>Create a benefit <ArrowRight size={19} />
-</button>
-<a href="#benefits" className="secondary">Try the demo <span>↓</span>
-</a>
-</div>
-<div className="hero-foot">
-<span>
-<CheckCircle size={18} /> No shares leave your wallet</span>
-<span>
-<CheckCircle size={18} /> Free testnet demo</span>
-</div>
-</div>
-<div className="hero-art" aria-label="Example holder benefit">
-<div className="float-note">Your wallet qualifies <CheckCircle weight="fill" />
-</div>
-<div className="ticket hero-ticket">
-<div className="ticket-top">
-<span className="stock-mark">dTSLA</span>
-<span className="testnet-pill">X Layer testnet</span>
-</div>
-<div className="ticket-content">
-<p className="mini-label">Ownership has its perks</p>
-<h2>Tesla Holder Pack</h2>
-<p>A little more from what you hold.</p>
-</div>
-<div className="ticket-bottom">
-<div>
-<small>To unlock</small>
-<strong>Hold 0.01 dTSLA</strong>
-</div>
-<Gift size={31} />
-</div>
-</div>
-<div className="float-caption">A shareable access page.<br />Verified by the wallet itself.</div>
-</div>
-</section>
-<section className="benefits-section" id="benefits">
-<div className="section-head">
-<div>
-<p className="intro-tag">Live demo</p>
-<h2>Try a holder benefit.</h2>
-<p>Use free demo shares. These are test assets, not real stocks.</p>
-</div>
-<a href={`${EXPLORER}/address/${CONTRACT}`} target="_blank" rel="noreferrer" className="explorer-link">View the contract <ArrowSquareOut size={17} />
-</a>
-</div>
-<div className="benefit-list">{benefits.length ? benefits.map((benefit) => <button className="benefit-row" key={benefit.id.toString()} onClick={() => openBenefit(benefit)}>
-<span className="row-symbol">{benefitMeta(benefit).asset}</span>
-<span className="row-text">
-<strong>{benefit.title}</strong>
-<small>{benefit.description}</small>
-</span>
-<span className="row-min">Hold {amount(benefit.minimum)} {benefitMeta(benefit).asset}</span>
-<ArrowRight size={21} />
-</button>) : <div className="empty-benefits">
-<Gift size={29} />
-<strong>{validContract ? "No benefits published yet." : "Demo contract pending deployment."}</strong>
-<p>Create the first benefit to start the live flow.</p>
-</div>}</div>
-</section>
-<RealStockCheck connected={address} />
-<section className="how-section">
-<h2>From holding to access.</h2>
-<div>
-<p>
-<b>01</b> A creator sets a minimum share balance.</p>
-<p>
-<b>02</b> A visitor connects and collects free demo shares.</p>
-<p>
-<b>03</b> X Layer checks the balance and records the unlock.</p>
-</div>
-</section>
-</main>}
-    {status && view !== "create" && <div className="busy-toast">
-<SpinnerGap className="spin" size={18} />{status}</div>}
-    {tx && <div className="tx-toast">
-<span>Transaction on X Layer</span>
-<a href={`${EXPLORER}/tx/${tx}`} target="_blank" rel="noreferrer">View receipt <ArrowSquareOut size={14} />
-</a>
-</div>}
-    {error && <div className="error-toast" role="alert">
-<span>{error}</span>
-<button onClick={() => setError("")} aria-label="Dismiss error">×</button>
-</div>}
+      <button className="brand" onClick={goHome} aria-label="xPerks home">
+        <img src="/logo.svg" alt="" /> <span>xPerks</span>
+      </button>
+      <nav>
+        <button onClick={() => navigate("explore", "/explore")}>Explore</button>
+        <button onClick={() => navigate("faucet", "/demo-stocks")}>Demo stocks</button>
+        <button onClick={() => navigate("how", "/how-it-works")}>How it works</button>
+        <button onClick={() => navigate("faq", "/faq")}>FAQ</button>
+      </nav>
+      <div className="header-actions">
+        {address && <button className="header-create ghost" onClick={openDashboard}>Dashboard</button>}
+        <button className="header-create" onClick={() => navigate("create", "/create")}>Create perk</button>
+        <button className="wallet-button" onClick={connect}><Wallet size={18} /> {address ? short(address) : "Connect"}</button>
+      </div>
+    </header>
+
+    {selected ? <CampaignDetail
+      campaign={selected}
+      benefit={benefit}
+      address={address}
+      balance={balance}
+      received={received}
+      claimed={claimed}
+      unlockedUrl={unlockedUrl}
+      busy={busy}
+      connect={connect}
+      collect={() => writeCampaignAction("claimDemoAsset", [selected.asset_symbol])}
+      verify={() => writeCampaignAction("claimBenefit", [BigInt(selected.onchain_benefit_id)])}
+      reveal={() => revealAccess()}
+      faucet={() => navigate("faucet", `/demo-stocks?contract=${selected.contract_address}&asset=${selected.asset_symbol}`)}
+      back={() => navigate("explore", "/explore")}
+      copy={() => copy(window.location.href)}
+      copied={copied}
+    /> : view === "create" ? <CreatePage
+      title={title}
+      setTitle={setTitle}
+      description={description}
+      setDescription={setDescription}
+      asset={asset}
+      setAsset={setAsset}
+      minimum={minimum}
+      setMinimum={setMinimum}
+      destination={destination}
+      setDestination={setDestination}
+      submit={publishCampaign}
+      busy={busy}
+      status={status}
+      createdLink={createdLink}
+      copied={copied}
+      copy={copy}
+      back={goHome}
+    /> : view === "explore" ? <ExplorePage campaigns={campaigns} openCampaign={openCampaign} create={() => navigate("create", "/create")} />
+      : view === "faucet" ? <FaucetPage contract={currentContract} selectedAsset={faucetAsset} setSelectedAsset={setFaucetAsset} claim={claimFromFaucet} busy={busy} connect={connect} address={address} />
+      : view === "dashboard" ? <DashboardPage campaigns={dashboardCampaigns} edit={changeDestination} copy={copy} />
+      : view === "how" ? <HowPage create={() => navigate("create", "/create")} faucet={() => navigate("faucet", "/demo-stocks")} />
+      : view === "faq" ? <FaqPage />
+      : <HomePage campaigns={campaigns} openCampaign={openCampaign} create={() => navigate("create", "/create")} faucet={() => navigate("faucet", "/demo-stocks")} />}
+
+    {status && view !== "create" && <div className="busy-toast"><SpinnerGap className="spin" size={18} />{status}</div>}
+    {tx && <div className="tx-toast"><span>Transaction on X Layer</span><a href={`${EXPLORER}/tx/${tx}`} target="_blank" rel="noreferrer">View receipt <ArrowSquareOut size={14} /></a></div>}
+    {error && <div className="error-toast" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error">×</button></div>}
+
     <footer>
-<span>
-<img className="footer-logo" src="/logo.svg" alt="" /> xPerks</span>
-<p>A testnet prototype for OKX Dev Day 2026. Demo shares have no value and are not official tokenized stocks.</p>
-<a href={`${EXPLORER}/address/${CONTRACT}`} target="_blank" rel="noreferrer">X Layer explorer <ArrowSquareOut size={14} />
-</a>
-</footer>
+      <span><img className="footer-logo" src="/logo.svg" alt="" /> xPerks</span>
+      <p>Testnet demo shares have no financial value and are not real stocks or official tokenized equities.</p>
+      <a href={EXPLORER} target="_blank" rel="noreferrer">X Layer explorer <ArrowSquareOut size={14} /></a>
+    </footer>
   </div>;
 }
 
-function ExplorePage({ benefits, openBenefit, create }: { benefits: Benefit[]; openBenefit: (benefit: Benefit) => void; create: () => void }) {
-  return <main className="page-shell"><section className="page-hero"><p className="intro-tag">Explore xPerks</p><h1>What you hold<br />should open doors.</h1><p>Discover experiences made for onchain shareholders. Every perk has its own page, rule, and shareable link.</p><button className="primary" onClick={create}>Create a perk <ArrowRight size={18} /></button></section><section className="perk-grid">{benefits.map((benefit, index) => <button className="perk-card" key={benefit.id.toString()} onClick={() => openBenefit(benefit)}><span className="perk-index">0{index + 1}</span><div className="perk-symbol">{benefitMeta(benefit).asset}</div><div><p>Verified holder access</p><h2>{benefit.title}</h2><span>{benefit.description}</span></div><footer><strong>Hold {amount(benefit.minimum)} {benefitMeta(benefit).asset}</strong><ArrowRight size={20} /></footer></button>)}</section></main>;
+function CampaignDetail(props: {
+  campaign: Campaign;
+  benefit: Benefit | null;
+  address: Address | null;
+  balance: bigint;
+  received: boolean;
+  claimed: boolean;
+  unlockedUrl: string;
+  busy: string;
+  connect: () => void;
+  collect: () => void;
+  verify: () => void;
+  reveal: () => void;
+  faucet: () => void;
+  back: () => void;
+  copy: () => void;
+  copied: boolean;
+}) {
+  const { campaign, benefit, address, balance, received, claimed, unlockedUrl, busy } = props;
+  const enough = benefit ? balance >= benefit.minimum : Number(formatUnits(balance, 18)) >= Number(campaign.minimum_display);
+  return <main className="detail-main">
+    <button className="back-link" onClick={props.back}>← Explore perks</button>
+    <div className="detail-grid">
+      <article className="ticket detail-ticket">
+        <div className="ticket-top"><span className="stock-mark">{campaign.asset_symbol}</span><span className="testnet-pill">X Layer testnet</span></div>
+        <div className="ticket-content">
+          <p className="mini-label">Campaign /c/{campaign.id}</p>
+          <h1>{campaign.title}</h1>
+          <p>{campaign.description}</p>
+        </div>
+        <div className="ticket-bottom">
+          <div><small>Hold at least</small><strong>{campaign.minimum_display} {campaign.asset_symbol}</strong></div>
+          <Gift size={30} />
+        </div>
+      </article>
+
+      <section className="claim-panel">
+        <div className="access-heading"><span className="panel-icon"><ShieldCheck size={25} /></span><span>Wallet ownership check</span></div>
+        <h2>{claimed ? "You qualify." : "Your wallet is the key."}</h2>
+        <p>{claimed ? "This wallet passed the campaign rule on X Layer testnet." : `xPerks checks whether this exact wallet holds the required ${campaign.asset_symbol} demo stock. Other demo stocks do not count.`}</p>
+        <div className="wallet-snapshot">
+          <div><small>Connected wallet</small><strong>{address ? short(address) : "Not connected"}</strong></div>
+          <div><small>{campaign.asset_symbol} balance</small><strong>{address ? `${formatAmount(balance)} ${campaign.asset_symbol}` : "—"}</strong></div>
+        </div>
+
+        {!address ? <button className="access-action" onClick={props.connect}><Wallet size={19} /> Connect wallet</button>
+          : !received ? <>
+            <button className="access-action" onClick={props.collect} disabled={!!busy}>Get free demo {campaign.asset_symbol}</button>
+            <button className="faucet-link" onClick={props.faucet}>Open the demo-stock faucet instead →</button>
+          </>
+          : !claimed ? <button className="access-action" onClick={props.verify} disabled={!!busy || !enough}><ShieldCheck size={19} /> Verify ownership</button>
+          : unlockedUrl ? <a className="access-action unlocked" href={unlockedUrl} target="_blank" rel="noreferrer">Open your private perk <ArrowSquareOut size={18} /></a>
+          : <button className="access-action unlocked" onClick={props.reveal} disabled={!!busy}>Reveal my access</button>}
+
+        {address && !received && <p className="gas-help">Demo stocks are free, but the test transaction needs free test OKB. <a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Get test OKB <ArrowSquareOut size={13} /></a></p>}
+        {claimed && <div className="verified-line"><CheckCircle weight="fill" /> Verified on X Layer</div>}
+      </section>
+    </div>
+    <div className="proof-row">
+      <span>Contract: <a href={`${EXPLORER}/address/${campaign.contract_address}`} target="_blank" rel="noreferrer">{short(campaign.contract_address)}</a></span>
+      <button onClick={props.copy}><Copy size={15} /> {props.copied ? "Copied" : "Copy campaign link"}</button>
+    </div>
+  </main>;
 }
 
-function HowPage({ create }: { create: () => void }) {
-  return <main className="page-shell"><section className="page-hero narrow"><p className="intro-tag">How it works</p><h1>One link.<br />A real ownership check.</h1><p>xPerks turns a wallet balance into access without moving, staking, or locking the asset.</p></section><section className="process-grid"><article><b>01</b><Gift size={28} /><h2>Publish a perk</h2><p>Set the asset, minimum balance, and reward. xPerks creates a clean page you can share anywhere.</p></article><article><b>02</b><Wallet size={28} /><h2>Connect a wallet</h2><p>The visitor opens that link and connects. Their assets never leave their wallet.</p></article><article><b>03</b><ShieldCheck size={28} /><h2>Unlock access</h2><p>X Layer verifies the rule and records the unlock in a transparent testnet transaction.</p></article></section><section className="page-cta"><h2>Make ownership feel useful.</h2><button className="primary" onClick={create}>Create your first perk <ArrowRight size={18} /></button></section></main>;
+function CreatePage(props: {
+  title: string; setTitle: (v: string) => void;
+  description: string; setDescription: (v: string) => void;
+  asset: string; setAsset: (v: string) => void;
+  minimum: string; setMinimum: (v: string) => void;
+  destination: string; setDestination: (v: string) => void;
+  submit: (event: React.FormEvent) => void;
+  busy: string; status: string; createdLink: string; copied: boolean;
+  copy: (value: string) => void; back: () => void;
+}) {
+  return <main className="create-main">
+    <button className="back-link" onClick={props.back}>← Explore perks</button>
+    <div className="create-grid">
+      <div>
+        <p className="intro-tag">For creators</p>
+        <h1>Create one link for one ownership rule.</h1>
+        <p className="lead">Choose a stock, set the minimum, add a private destination, then share the permanent campaign URL.</p>
+        <div className="note-card"><ShieldCheck size={23} /><div><strong>Creator-owned campaign</strong><p>Your wallet is recorded as the creator. Another wallet cannot edit your private destination just by guessing the campaign number.</p><a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Get free test OKB <ArrowSquareOut size={14} /></a></div></div>
+      </div>
+      <form className="create-form" onSubmit={props.submit}>
+        <label>Campaign name<input required minLength={3} maxLength={80} value={props.title} onChange={(e) => props.setTitle(e.target.value)} /></label>
+        <label>What does the holder get?<textarea required maxLength={320} rows={2} value={props.description} onChange={(e) => props.setDescription(e.target.value)} /></label>
+        <div className="form-row">
+          <label>Required demo stock<select value={props.asset} onChange={(e) => props.setAsset(e.target.value)}>{DEMO_ASSETS.map((item) => <option value={item.symbol} key={item.symbol}>{item.name} ({item.ticker}) · {item.symbol}</option>)}</select></label>
+          <label>Minimum balance<input required type="number" min="0.000001" max="1" step="any" value={props.minimum} onChange={(e) => props.setMinimum(e.target.value)} /></label>
+        </div>
+        <label>Private destination<input required type="url" maxLength={1200} placeholder="https://t.me/your-group" value={props.destination} onChange={(e) => props.setDestination(e.target.value)} /><small>Only a wallet that passes the ownership check can ask xPerks to reveal this URL.</small></label>
+        <button className="primary wide" type="submit" disabled={!!props.busy}>{props.status ? <SpinnerGap className="spin" size={19} /> : <Plus size={18} />} {props.status || "Publish campaign"}</button>
+        {props.createdLink && <div className="created-box"><CheckCircle weight="fill" /><div><strong>Campaign published</strong><p><a href={props.createdLink}>{props.createdLink}</a></p><button type="button" onClick={() => props.copy(props.createdLink)}>{props.copied ? "Copied" : "Copy link"}</button></div></div>}
+      </form>
+    </div>
+  </main>;
+}
+
+function HomePage({ campaigns, openCampaign, create, faucet }: { campaigns: Campaign[]; openCampaign: (c: Campaign) => void; create: () => void; faucet: () => void }) {
+  const example = campaigns[0];
+  return <main>
+    <section className="hero">
+      <div className="hero-copy">
+        <p className="intro-tag"><span className="live-dot" /> Built on X Layer testnet</p>
+        <h1>Stocks that<br />unlock something.</h1>
+        <p>Create a perk for holders, share one campaign link, and let the wallet prove whether it owns the required demo stock.</p>
+        <div className="hero-actions"><button className="primary" onClick={create}>Create a campaign <ArrowRight size={19} /></button><button className="secondary button-link" onClick={faucet}>Get demo stocks <span>→</span></button></div>
+        <div className="hero-foot"><span><CheckCircle size={18} /> Wallet-specific checks</span><span><CheckCircle size={18} /> Seven demo stocks</span><span><CheckCircle size={18} /> Private perk delivery</span></div>
+      </div>
+      <div className="hero-art" aria-label="Example stock holder perk">
+        <div className="float-note">Wallet qualifies <CheckCircle weight="fill" /></div>
+        <div className="ticket hero-ticket">
+          <div className="ticket-top"><span className="stock-mark">{example?.asset_symbol || "dTSLA"}</span><span className="testnet-pill">X Layer testnet</span></div>
+          <div className="ticket-content"><p className="mini-label">Ownership has its perks</p><h2>{example?.title || "Tesla Holder Pack"}</h2><p>{example?.description || "A private reward unlocked by a wallet balance."}</p></div>
+          <div className="ticket-bottom"><div><small>To unlock</small><strong>Hold {example?.minimum_display || 0.01} {example?.asset_symbol || "dTSLA"}</strong></div><Gift size={31} /></div>
+        </div>
+        <div className="float-caption">Campaign links look like /c/18.<br />The creator wallet owns the settings.</div>
+      </div>
+    </section>
+
+    <section className="benefits-section" id="benefits">
+      <div className="section-head"><div><p className="intro-tag">Live campaigns</p><h2>Try the ownership check.</h2><p>Get a free demo stock first, then come back and verify the same wallet.</p></div><button className="explorer-link plain-button" onClick={faucet}>Open demo-stock faucet <ArrowRight size={17} /></button></div>
+      <div className="benefit-list">{campaigns.length ? campaigns.slice(0, 8).map((campaign) => <button className="benefit-row" key={campaign.id} onClick={() => openCampaign(campaign)}><span className="row-symbol">{campaign.asset_symbol}</span><span className="row-text"><strong>{campaign.title}</strong><small>{campaign.description}</small></span><span className="row-min">Hold {campaign.minimum_display} {campaign.asset_symbol}</span><ArrowRight size={21} /></button>) : <div className="empty-benefits"><Gift size={29} /><strong>No V2 campaigns yet.</strong><p>Create the first one. xPerks will deploy the multi-stock test contract from your wallet.</p></div>}</div>
+    </section>
+
+    <section className="how-section"><h2>From demo stock to private access.</h2><div><p><b>01</b> Get one free demo stock on X Layer testnet.</p><p><b>02</b> Open a campaign link and connect the same wallet.</p><p><b>03</b> xPerks checks that exact asset balance and opens the private destination only after verification.</p></div></section>
+  </main>;
+}
+
+function ExplorePage({ campaigns, openCampaign, create }: { campaigns: Campaign[]; openCampaign: (campaign: Campaign) => void; create: () => void }) {
+  return <main className="page-shell"><section className="page-hero"><p className="intro-tag">Explore xPerks</p><h1>One campaign.<br />One stock rule.</h1><p>Each campaign has a permanent numeric link, an X Layer ownership rule, and a creator wallet that controls the private destination.</p><button className="primary" onClick={create}>Create a campaign <ArrowRight size={18} /></button></section><section className="perk-grid">{campaigns.map((campaign, index) => <button className="perk-card" key={campaign.id} onClick={() => openCampaign(campaign)}><span className="perk-index">/c/{campaign.id}</span><div className="perk-symbol">{campaign.asset_symbol}</div><div><p>Verified holder access</p><h2>{campaign.title}</h2><span>{campaign.description}</span></div><footer><strong>Hold {campaign.minimum_display} {campaign.asset_symbol}</strong><ArrowRight size={20} /></footer></button>)}</section>{!campaigns.length && <div className="empty-state-large"><Gift size={35} /><h2>No campaigns yet.</h2><p>Publish the first multi-stock xPerks campaign.</p></div>}</main>;
+}
+
+function FaucetPage({ contract, selectedAsset, setSelectedAsset, claim, busy, connect, address }: {
+  contract: Address | null;
+  selectedAsset: string;
+  setSelectedAsset: (value: string) => void;
+  claim: (asset: string) => void;
+  busy: string;
+  connect: () => void;
+  address: Address | null;
+}) {
+  return <main className="page-shell">
+    <section className="page-hero narrow"><p className="intro-tag">Free test assets</p><h1>Get demo stocks.</h1><p>These are testnet-only mock shares. They have no money value and are not real or official tokenized stocks. Each stock is tracked separately, so dAAPL cannot satisfy a dTSLA campaign.</p>{contract ? <p className="contract-line">Faucet contract <a href={`${EXPLORER}/address/${contract}`} target="_blank" rel="noreferrer">{short(contract)}</a></p> : <p className="contract-line">Create a campaign first to initialize the multi-stock demo contract.</p>}</section>
+    <section className="demo-stock-grid">{DEMO_ASSETS.map((item) => <article className={`demo-stock-card ${selectedAsset === item.symbol ? "selected" : ""}`} key={item.symbol} onClick={() => setSelectedAsset(item.symbol)}><div><span>{item.ticker}</span><small>{item.name}</small></div><strong>{item.symbol}</strong><p>1 free demo share per wallet, per test contract.</p>{address ? <button onClick={(event) => { event.stopPropagation(); claim(item.symbol); }} disabled={!!busy || !contract}>{busy === `faucet-${item.symbol}` || busy === "confirming" ? "Working…" : `Get 1 ${item.symbol}`}</button> : <button onClick={(event) => { event.stopPropagation(); connect(); }}>Connect wallet</button>}</article>)}</section>
+    <div className="page-cta compact"><h2>Need gas too?</h2><a className="primary" href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Get free test OKB <ArrowSquareOut size={17} /></a></div>
+  </main>;
+}
+
+function DashboardPage({ campaigns, edit, copy }: { campaigns: Campaign[]; edit: (campaign: Campaign) => void; copy: (value: string) => void }) {
+  return <main className="page-shell">
+    <section className="page-hero narrow"><p className="intro-tag">Creator dashboard</p><h1>Your campaigns only.</h1><p>The backend verifies your wallet signature before returning this list. A visitor cannot load another creator’s private settings by changing a URL.</p></section>
+    <section className="dashboard-grid">{campaigns.map((campaign) => <article className="dashboard-card" key={campaign.id}><div><span className="row-symbol">{campaign.asset_symbol}</span><small>/c/{campaign.id}</small></div><h2>{campaign.title}</h2><p>{campaign.description}</p><dl><div><dt>Rule</dt><dd>Hold {campaign.minimum_display} {campaign.asset_symbol}</dd></div><div><dt>Status</dt><dd>{campaign.status}</dd></div></dl><div className="dashboard-actions"><button onClick={() => copy(`${window.location.origin}/c/${campaign.id}`)}>Copy link</button><button onClick={() => edit(campaign)}>Change private destination</button></div></article>)}</section>
+    {!campaigns.length && <div className="empty-state-large"><ShieldCheck size={35} /><h2>No campaigns for this wallet.</h2><p>Connect the wallet that published your xPerks campaigns.</p></div>}
+  </main>;
+}
+
+function HowPage({ create, faucet }: { create: () => void; faucet: () => void }) {
+  return <main className="page-shell"><section className="page-hero narrow"><p className="intro-tag">How it works</p><h1>Stock first.<br />Perk second.</h1><p>The testnet demo mirrors the production idea with separate onchain mock balances, creator-owned campaigns, and protected perk delivery.</p></section><section className="process-grid"><article><b>01</b><Gift size={28} /><h2>Get a demo stock</h2><p>Choose TSLA, NVDA, AAPL, COIN, MSFT, AMZN, or MSTR. The contract records that specific mock asset in your wallet.</p></article><article><b>02</b><Wallet size={28} /><h2>Open /c/…</h2><p>Every campaign has its own numeric share link. Connect the wallet you want checked.</p></article><article><b>03</b><ShieldCheck size={28} /><h2>Verify and unlock</h2><p>The contract checks the required asset and amount. The private destination stays offchain until the wallet passes.</p></article></section><section className="page-cta"><h2>Try the full judge flow.</h2><div className="cta-actions"><button className="primary" onClick={faucet}>Get demo stocks</button><button className="primary inverse" onClick={create}>Create campaign <ArrowRight size={18} /></button></div></section></main>;
 }
 
 function FaqPage() {
-  const questions = [["Is this using real stocks?", "No. The current experience uses free demo dTSLA on X Layer testnet. It has no monetary value and is not an official tokenized stock."], ["Do assets leave my wallet?", "No. xPerks reads the wallet balance and checks it against the creator’s rule. Nothing is transferred, locked, or staked."], ["Does every perk get its own link?", "Yes. Published perks open at a human-readable URL such as /perk/tesla-holder-pack, ready to share in a post, bio, or campaign."], ["What does Supabase add?", "The onchain rule remains verifiable. Supabase can add creator accounts, private reward delivery, analytics, drafts, and editable campaign metadata once connected."], ["Why X Layer?", "X Layer gives the demo fast, low-cost EVM transactions while remaining compatible with familiar wallet tooling."]];
-  return <main className="page-shell faq-page"><section className="page-hero narrow"><p className="intro-tag">Frequently asked</p><h1>Clear answers.<br />No fine print.</h1></section><section className="faq-list">{questions.map(([question, answer], index) => <details key={question} open={index === 0}><summary><span>0{index + 1}</span>{question}<b>+</b></summary><p>{answer}</p></details>)}</section></main>;
+  const questions = [
+    ["Are these real stocks?", "No. dTSLA, dNVDA, dAAPL, dCOIN, dMSFT, dAMZN, and dMSTR are free testnet demo assets with no financial value."],
+    ["Does owning one demo stock qualify me for every campaign?", "No. Each asset has a separate onchain balance. A wallet holding dAAPL does not pass a dTSLA rule."],
+    ["Does every campaign get its own link?", "Yes. Campaigns use permanent numeric URLs such as /c/18. The number identifies the campaign, while wallet signatures control creator-only actions."],
+    ["Can someone edit my campaign by changing the number in the URL?", "No. Public campaign pages are shareable, but creator management requires a fresh signature from the wallet that created the onchain campaign."],
+    ["Why do I need test OKB?", "X Layer testnet transactions still need gas. The OKB is free from the testnet faucet and has no mainnet value."],
+    ["What changes for production?", "The demo mock assets would be replaced by supported issuer token contracts. The same idea is then a balance check against the real token contract rather than a demo balance."],
+  ];
+  return <main className="page-shell faq-page"><section className="page-hero narrow"><p className="intro-tag">Frequently asked</p><h1>Clear answers.<br />No fake ownership.</h1></section><section className="faq-list">{questions.map(([question, answer], index) => <details key={question} open={index === 0}><summary><span>0{index + 1}</span>{question}<b>+</b></summary><p>{answer}</p></details>)}</section></main>;
 }
 
 function errorText(cause: unknown) {
   const error = cause as { shortMessage?: string; message?: string; code?: number };
   if (error?.code === 4001) return "Wallet request rejected. You can try again when ready.";
   const message = error?.shortMessage || error?.message || "Something went wrong. Try again.";
-  if (/unrecognized chain|unknown chain|chain.*not added/i.test(message)) return "Your wallet could not add X Layer automatically. Open its network settings, add X Layer Testnet, then try again.";
-  if (/insufficient funds/i.test(message)) return "This wallet needs free test OKB for gas. Use the X Layer faucet and try again.";
-  return message.split("\n")[0].slice(0, 240);
+  if (/unrecognized chain|unknown chain|chain.*not added/i.test(message)) return "Your wallet could not add X Layer automatically. Add X Layer Testnet in the wallet network settings and try again.";
+  if (/insufficient funds/i.test(message)) return "This wallet needs free test OKB for gas. Use the X Layer testnet faucet and try again.";
+  if (/Already received this demo asset/i.test(message)) return "This wallet already received its free demo share for that stock on this test contract.";
+  return message.split("\n")[0].slice(0, 260);
 }
 
-createRoot(document.getElementById("root")!).render(<React.StrictMode>
-<App />
-</React.StrictMode>);
+createRoot(document.getElementById("root")!).render(<React.StrictMode><App /></React.StrictMode>);
