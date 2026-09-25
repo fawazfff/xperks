@@ -1,30 +1,81 @@
 # xPerks
 
-**Make ownership worth holding.** xPerks is an OKX Dev Day 2026 Remote Build prototype for the **Build a Market** track. Creators publish a benefit that requires a minimum token balance. Visitors connect a wallet, prove they hold the required amount on X Layer testnet, and record an unlock transaction.
+**Stocks that unlock something.** xPerks is a Stocklana hackathon prototype built on X Layer testnet. A creator makes a stock-holder campaign, gets a permanent numeric link such as `/c/18`, and shares it. A visitor connects a wallet, proves it holds the exact required demo stock, and unlocks a private destination.
 
-The demo uses **dTSLA**, a free test share minted by the demo contract. dTSLA has no financial value, is not a tokenized Tesla stock, and is not affiliated with Tesla or any stock issuer.
+## What changed in V2
 
-The homepage also includes a separate **read-only mainnet check** for the actual TSLAx token at `0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0` on X Layer. A visitor can enter any wallet address and read its real TSLAx balance. That check never claims a benefit or asks for a transaction.
+xPerks now has seven independent demo stocks:
 
-## Working flow
+- dTSLA
+- dNVDA
+- dAAPL
+- dCOIN
+- dMSFT
+- dAMZN
+- dMSTR
 
-1. A creator connects an EVM wallet to X Layer testnet (chain ID `1952`) and publishes a benefit.
-2. The contract stores the benefit and the minimum dTSLA balance. The creator gets a shareable `/benefit/{id}` URL.
-3. A visitor connects a wallet and calls `claimDemoShares()` once to receive 1 dTSLA.
-4. `claimBenefit(id)` checks the visitor's balance within the contract and emits `BenefitClaimed` if they qualify.
-5. The site shows the reward message and links to the real X Layer testnet transaction.
+Each balance is separate onchain. Owning dAAPL does **not** qualify a wallet for a dTSLA campaign.
 
-**Important:** The demo reward message is publicly stored onchain. Do not put private links, codes, or sensitive data into it. A production version would use a separate gated delivery service, issuer-verified assets, and security review.
+The demo-stock faucet is at `/demo-stocks`. Every demo stock is testnet-only, has no financial value, and is not a real or official tokenized stock.
 
-## Current deployment
+## Campaign links
 
-- Network: X Layer testnet
-- RPC: `https://testrpc.xlayer.tech/terigon`
-- Explorer: `https://www.okx.com/web3/explorer/xlayer-test`
-- Contract: [`0x56bdbf41ab0eb0fa450dbe3774504b09a034db05`](https://www.okx.com/web3/explorer/xlayer-test/address/0x56bdbf41ab0eb0fa450dbe3774504b09a034db05)
-- Deployment transaction: [`0x388fee...d573b3df`](https://www.okx.com/web3/explorer/xlayer-test/tx/0x388fee57769305a9c31f91acb96928828fc8a47bef4fdd7d2c984664d573b3df)
-- Verified example claim: [`0x5e8482...6d718a7`](https://www.okx.com/web3/explorer/xlayer-test/tx/0x5e8482e339d25e1c2671bb8b0d83ce0b115ff5258fb523aec22fd50c06d718a7)
-- Public product: [xperks.vercel.app](https://xperks.vercel.app)
+Every published campaign is saved in Supabase and receives a permanent numeric URL:
+
+```
+/c/18
+/c/19
+/c/20
+```
+
+The public link can be shared with anyone. Creator-only actions are different: the backend requires a fresh signature from the wallet that created the campaign before returning creator dashboard data or changing the private destination.
+
+## Judge flow
+
+1. Open a campaign such as `/c/18`.
+2. Connect a wallet.
+3. xPerks switches the wallet to X Layer Testnet automatically. If the network is missing, it asks the wallet to add it first.
+4. If the wallet does not own the required demo stock, open **Get demo stocks**.
+5. Mint the exact mock stock required by the campaign.
+6. Return to the campaign and click **Verify ownership**.
+7. The smart contract checks the exact asset balance and records the successful claim on X Layer.
+8. After the onchain check succeeds, the backend releases the protected destination.
+
+## Creator flow
+
+1. Connect a wallet.
+2. Choose a demo stock and minimum balance.
+3. Add campaign text and a private HTTPS destination.
+4. Publish.
+5. xPerks stores the ownership rule on X Layer and the encrypted private destination in Supabase.
+6. The creator receives a permanent `/c/{id}` link.
+7. The creator dashboard only returns campaigns owned by the connected creator wallet.
+
+## Smart contract
+
+The V2 contract keeps separate balances for each demo stock and checks the campaign's required asset at claim time.
+
+Main functions:
+
+- `claimDemoAsset(asset)`
+- `balanceOfAsset(asset, wallet)`
+- `createBenefit(title, description, asset, minimum)`
+- `claimBenefit(id)`
+- `hasClaimed(id, wallet)`
+
+Network: X Layer Testnet, chain ID `1952`.
+
+## Backend
+
+Supabase stores:
+
+- permanent campaign IDs
+- creator wallet
+- onchain benefit ID
+- required asset and minimum
+- encrypted private destination
+
+The `xperks-api` Edge Function verifies wallet signatures for creator management and checks `hasClaimed` on X Layer before revealing a private destination.
 
 ## Run locally
 
@@ -34,27 +85,29 @@ cp .env.example .env
 npm run dev
 ```
 
-Set `VITE_XPERKS_CONTRACT` to your deployed contract address. Without it, the site shows the UI and clearly disables creation and claims.
+The build compiles the Solidity contract before TypeScript/Vite:
 
-## Deploy the contract
+```bash
+npm run build
+```
+
+## Deploy a contract manually
 
 ```bash
 npm run contracts:compile
 DEPLOYER_PRIVATE_KEY=0x... npm run contracts:deploy
 ```
 
-Fund the deployer with **free test OKB** from the [official X Layer faucet](https://web3.okx.com/xlayer/faucet) first. Never commit a private key. Set the resulting contract address as `VITE_XPERKS_CONTRACT`, then run `npm run build`. Vercel builds the static site from `dist`.
+Fund the deployer with free **test OKB** first. Never commit a private key.
 
-After deployment, a test wallet with free OKB can run `XPERKS_CONTRACT=0x... DEPLOYER_PRIVATE_KEY=0x... npm run contracts:seed` to create the example benefit, collect demo shares, and verify a real claim transaction. The command prints explorer links.
+## Test a deployed V2 contract
 
-## What was built for OKX Dev Day
+```bash
+XPERKS_CONTRACT=0x... DEPLOYER_PRIVATE_KEY=0x... npm run contracts:seed
+```
 
-The creator, eligibility, and benefit claim flow is new code for X Layer testnet. The product idea draws on my earlier [EquityKey](https://github.com/fawazfff/equitykey) project on Base. xPerks is a separate implementation and uses a new Solidity demo contract, new frontend, and X Layer transactions. EquityKey's existing Base contracts and Supabase service are not used by xPerks.
+This creates a dTSLA campaign, gets one dTSLA demo share, and performs a real claim transaction.
 
 ## Stack
 
-React, TypeScript, Vite, viem, Solidity, X Layer testnet, Vercel.
-
-## Demo guide
-
-Show the homepage, publish a Tesla Holder Pack benefit, open its link, claim free dTSLA with a second wallet, unlock it, and open the X Layer testnet explorer transaction. A 2 to 4 minute video should show these live steps rather than a simulated success screen.
+React, TypeScript, Vite, viem, Solidity, X Layer Testnet, Supabase, Vercel.
