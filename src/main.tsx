@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { ArrowRight, ArrowSquareOut, CheckCircle, Copy, Gift, Plus, ShieldCheck, SpinnerGap, Wallet } from "@phosphor-icons/react";
 import { createPublicClient, createWalletClient, custom, formatUnits, http, isAddress, parseUnits, type Address, type EIP1193Provider, type Hash } from "viem";
 import { xlayerMainnet, xlayerTestnet } from "./chain";
+import { perkIdForSlug } from "./supabase";
 import "./styles.css";
 import "./redesign.css";
 
@@ -92,11 +93,13 @@ function App() {
   async function loadBenefits() {
     if (!validContract) return;
     const count = await client.readContract({ address: CONTRACT, abi, functionName: "benefitCount" });
+    const slugMatch = window.location.pathname.match(/^\/perk\/([a-z0-9-]+)\/?$/);
+    const storedId = slugMatch ? await perkIdForSlug(slugMatch[1]).catch(() => null) : null;
     const ids = Array.from({ length: Number(count > 12n ? 12n : count) }, (_, i) => count - BigInt(i));
+    if (storedId && !ids.includes(storedId)) ids.push(storedId);
     const rows = await Promise.all(ids.map(async (id) => ({ id, ...await client.readContract({ address: CONTRACT, abi, functionName: "getBenefit", args: [id] }) })));
     setBenefits(rows.filter((row) => row.active));
     const idMatch = window.location.pathname.match(/^\/benefit\/(\d+)\/?$/);
-    const slugMatch = window.location.pathname.match(/^\/perk\/([a-z0-9-]+)\/?$/);
     if (idMatch) setSelected(rows.find((row) => row.id === BigInt(idMatch[1])) || null);
     if (slugMatch) setSelected(rows.find((row) => slugify(row.title) === slugMatch[1] || `${slugify(row.title)}-${row.id}` === slugMatch[1]) || null);
   }
