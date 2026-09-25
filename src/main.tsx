@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ArrowRight,
@@ -301,7 +301,12 @@ function App() {
     setTx(null);
     setCreatedLink("");
     setUnlockedUrl("");
-    window.history.pushState({}, "", path);
+    const target = new URL(path, window.location.origin);
+    const contract = target.searchParams.get("contract");
+    const requestedAsset = target.searchParams.get("asset");
+    if (contract && isAddress(contract)) setFaucetContract(contract);
+    if (requestedAsset && DEMO_ASSETS.some((item) => item.symbol === requestedAsset)) setFaucetAsset(requestedAsset);
+    window.history.pushState({}, "", target.pathname + target.search);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
