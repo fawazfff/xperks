@@ -21,8 +21,10 @@ The homepage also includes a separate **read-only mainnet check** for the actual
 - Network: X Layer testnet
 - RPC: `https://testrpc.xlayer.tech/terigon`
 - Explorer: `https://www.okx.com/web3/explorer/xlayer-test`
-- Contract: deployment pending free test OKB
-- Public product: deployment pending
+- Contract: [`0x56bdbf41ab0eb0fa450dbe3774504b09a034db05`](https://www.okx.com/web3/explorer/xlayer-test/address/0x56bdbf41ab0eb0fa450dbe3774504b09a034db05)
+- Deployment transaction: [`0x388fee...d573b3df`](https://www.okx.com/web3/explorer/xlayer-test/tx/0x388fee57769305a9c31f91acb96928828fc8a47bef4fdd7d2c984664d573b3df)
+- Verified example claim: [`0x5e8482...6d718a7`](https://www.okx.com/web3/explorer/xlayer-test/tx/0x5e8482e339d25e1c2671bb8b0d83ce0b115ff5258fb523aec22fd50c06d718a7)
+- Public product: [xperks.vercel.app](https://xperks.vercel.app)
 
 ## Run locally
 
