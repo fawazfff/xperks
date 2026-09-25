@@ -4,6 +4,8 @@
 
 The demo uses **dTSLA**, a free test share minted by the demo contract. dTSLA has no financial value, is not a tokenized Tesla stock, and is not affiliated with Tesla or any stock issuer.
 
+The homepage also includes a separate **read-only mainnet check** for the actual TSLAx token at `0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0` on X Layer. A visitor can enter any wallet address and read its real TSLAx balance. That check never claims a benefit or asks for a transaction.
+
 ## Working flow
 
 1. A creator connects an EVM wallet to X Layer testnet (chain ID `1952`) and publishes a benefit.
