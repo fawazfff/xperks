@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ArrowRight, ArrowSquareOut, CheckCircle, Copy, Gift, Plus, ShieldCheck, SpinnerGap, Wallet } from "@phosphor-icons/react";
-import { createPublicClient, createWalletClient, custom, formatUnits, http, isAddress, parseUnits, type Address, type EIP1193Provider, type Hash } from "viem";
+import { createPublicClient, createWalletClient, custom, formatUnits, http, isAddress, parseUnits, stringToHex, type Address, type EIP1193Provider, type Hash } from "viem";
 import { xlayerMainnet, xlayerTestnet } from "./chain";
-import { perkIdForSlug } from "./supabase";
+import { callPerkAccess, perkAssets, perkIdForSlug } from "./supabase";
 import "./styles.css";
 import "./redesign.css";
+import "./polish.css";
 
 const CONTRACT = (import.meta.env.VITE_XPERKS_CONTRACT || "0x56bdbf41ab0eb0fa450dbe3774504b09a034db05") as Address;
 const RPC = import.meta.env.VITE_XLAYER_RPC || "https://testrpc.xlayer.tech/terigon";
@@ -22,7 +23,8 @@ const abi = [
   { type: "event", name: "BenefitCreated", inputs: [{ name: "id", type: "uint256", indexed: true }, { name: "creator", type: "address", indexed: true }, { name: "minimum", type: "uint256", indexed: false }] },
 ] as const;
 
-type Benefit = { id: bigint; creator: Address; title: string; description: string; reward: string; minimum: bigint; active: boolean };
+type Benefit = { id: bigint; creator: Address; title: string; description: string; reward: string; minimum: bigint; active: boolean; asset?: string };
+type BenefitMeta = { asset: string; destination: string };
 type WalletProvider = EIP1193Provider & { on?: (event: string, callback: (...args: unknown[]) => void) => void; removeListener?: (event: string, callback: (...args: unknown[]) => void) => void };
 declare global { interface Window { ethereum?: WalletProvider } }
 const client = createPublicClient({ chain: xlayerTestnet, transport: http(RPC) });
@@ -32,6 +34,19 @@ const slugify = (value: string) => value.toLowerCase().trim().replace(/[^a-z0-9]
 const validContract = /^0x[0-9a-fA-F]{40}$/.test(CONTRACT);
 const REAL_TSLA = "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0" as Address;
 const mainnetClient = createPublicClient({ chain: xlayerMainnet, transport: http("https://rpc.xlayer.tech") });
+const DEMO_ASSETS = [
+  { symbol: "dTSLA", name: "Tesla" },
+  { symbol: "dNVDA", name: "NVIDIA" },
+  { symbol: "dCOIN", name: "Coinbase" },
+  { symbol: "dMSTR", name: "Strategy" },
+];
+function benefitMeta(benefit: Benefit): BenefitMeta {
+  try {
+    const parsed = JSON.parse(benefit.reward) as Partial<BenefitMeta>;
+    if (parsed.asset && parsed.destination) return { asset: benefit.asset || parsed.asset, destination: parsed.destination };
+  } catch { /* Legacy benefit */ }
+  return { asset: benefit.asset || "dTSLA", destination: "" };
+}
 
 function RealStockCheck({ connected }: { connected: Address | null }) {
   const [wallet, setWallet] = useState("");
@@ -84,10 +99,12 @@ function App() {
   const [error, setError] = useState("");
   const [tx, setTx] = useState<Hash | null>(null);
   const [createdLink, setCreatedLink] = useState("");
+  const [unlockedUrl, setUnlockedUrl] = useState("");
   const [copied, setCopied] = useState(false);
   const [title, setTitle] = useState("Tesla Holder Pack");
   const [description, setDescription] = useState("A thank-you for people holding demo Tesla shares.");
-  const [reward, setReward] = useState("Welcome to the Tesla Holder Pack. Your ownership has been verified on X Layer testnet.");
+  const [reward, setReward] = useState("https://t.me/xperks");
+  const [asset, setAsset] = useState("dTSLA");
   const [minimum, setMinimum] = useState("0.01");
 
   async function loadBenefits() {
@@ -97,7 +114,8 @@ function App() {
     const storedId = slugMatch ? await perkIdForSlug(slugMatch[1]).catch(() => null) : null;
     const ids = Array.from({ length: Number(count > 12n ? 12n : count) }, (_, i) => count - BigInt(i));
     if (storedId && !ids.includes(storedId)) ids.push(storedId);
-    const rows = await Promise.all(ids.map(async (id) => ({ id, ...await client.readContract({ address: CONTRACT, abi, functionName: "getBenefit", args: [id] }) })));
+    const assetMap = await perkAssets(ids);
+    const rows = await Promise.all(ids.map(async (id) => ({ id, ...await client.readContract({ address: CONTRACT, abi, functionName: "getBenefit", args: [id] }), asset: assetMap[id.toString()] })));
     setBenefits(rows.filter((row) => row.active));
     const idMatch = window.location.pathname.match(/^\/benefit\/(\d+)\/?$/);
     if (idMatch) setSelected(rows.find((row) => row.id === BigInt(idMatch[1])) || null);
@@ -134,7 +152,7 @@ function App() {
   }, [address, selected?.id]);
 
   function openBenefit(benefit: Benefit) {
-    setSelected(benefit); setError(""); setTx(null); setCopied(false);
+    setSelected(benefit); setError(""); setTx(null); setCopied(false); setUnlockedUrl("");
     window.history.pushState({}, "", `/perk/${slugify(benefit.title)}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -168,12 +186,32 @@ function App() {
     const provider = window.ethereum;
     if (!provider) throw new Error("No browser wallet found.");
     const chainId = await provider.request({ method: "eth_chainId" });
-    if (chainId === "0x7a0") return;
+    if (typeof chainId === "string" && Number.parseInt(chainId, 16) === 1952) return;
     try { await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7a0" }] }); }
     catch (cause) {
-      if ((cause as { code?: number }).code !== 4902) throw cause;
+      const walletError = cause as { code?: number; message?: string; data?: { originalError?: { code?: number; message?: string } } };
+      const code = walletError.code ?? walletError.data?.originalError?.code;
+      const message = `${walletError.message || ""} ${walletError.data?.originalError?.message || ""}`;
+      if (code !== 4902 && code !== -32603 && !/unrecognized|unknown chain|not added/i.test(message)) throw cause;
       await provider.request({ method: "wallet_addEthereumChain", params: [{ chainId: "0x7a0", chainName: "X Layer Testnet", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 }, rpcUrls: [RPC], blockExplorerUrls: [EXPLORER] }] });
+      await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7a0" }] });
     }
+  }
+  async function signAccess(message: string, account: Address) {
+    if (!window.ethereum) throw new Error("No browser wallet found.");
+    return await window.ethereum.request({ method: "personal_sign", params: [stringToHex(message), account] }) as string;
+  }
+  async function revealAccess(targetAddress = address, targetBenefit = selected) {
+    if (!targetBenefit || !targetAddress) return;
+    setBusy("access"); setError("");
+    try {
+      const message = `xPerks access request\nBenefit ID: ${targetBenefit.id}`;
+      const signature = await signAccess(message, targetAddress);
+      const result = await callPerkAccess({ action: "unlock", benefitId: targetBenefit.id.toString(), signature });
+      if (!result.destination) throw new Error("This creator has not added an access destination yet.");
+      setUnlockedUrl(result.destination);
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setBusy(""); }
   }
   async function write(functionName: "claimDemoShares" | "claimBenefit" | "createBenefit", args?: readonly [bigint] | readonly [string, string, string, bigint]) {
     setError(""); setTx(null); setBusy(functionName);
@@ -194,13 +232,18 @@ function App() {
       const receipt = await client.waitForTransactionReceipt({ hash, timeout: 90000 });
       if (receipt.status !== "success") throw new Error("The transaction failed. View it in the explorer for details.");
       if (functionName === "createBenefit") {
-        await loadBenefits();
         const count = await client.readContract({ address: CONTRACT, abi, functionName: "benefitCount" });
         const latest = await client.readContract({ address: CONTRACT, abi, functionName: "getBenefit", args: [count] });
-        setCreatedLink(`${window.location.origin}/perk/${slugify(latest.title)}`);
+        const destination = reward.trim();
+        const message = `xPerks creator authorization\nBenefit ID: ${count}\nAsset: ${asset}\nDestination: ${destination}`;
+        const signature = await signAccess(message, account);
+        const result = await callPerkAccess({ action: "create", benefitId: count.toString(), asset, destination, signature });
+        setCreatedLink(`${window.location.origin}${result.path || `/perk/${slugify(latest.title)}`}`);
+        await loadBenefits();
       } else {
         await loadWallet(account, selected?.id);
         await loadBenefits();
+        if (functionName === "claimBenefit") await revealAccess(account, selected);
       }
     } catch (cause) { setError(errorText(cause)); }
     finally { setBusy(""); }
@@ -230,7 +273,7 @@ function App() {
 <div className="detail-grid">
 <article className="ticket detail-ticket">
 <div className="ticket-top">
-<span className="stock-mark">dTSLA</span>
+<span className="stock-mark">{benefitMeta(selected).asset}</span>
 <span className="testnet-pill">X Layer testnet</span>
 </div>
 <div className="ticket-content">
@@ -241,47 +284,19 @@ function App() {
 <div className="ticket-bottom">
 <div>
 <small>Hold at least</small>
-<strong>{amount(selected.minimum)} dTSLA</strong>
+<strong>{amount(selected.minimum)} {benefitMeta(selected).asset}</strong>
 </div>
 <Gift size={30} />
 </div>
 </article>
 <section className="claim-panel">
-<span className="panel-icon">
-<ShieldCheck size={25} />
-</span>
-<h2>Prove you hold it.</h2>
-<p>Connect a wallet, collect free demo shares, then record your unlock on X Layer.</p>
-<div className="balance-row">
-<span>Your demo shares</span>
-<strong>{address ? `${amount(balance)} dTSLA` : "Connect to check"}</strong>
-</div>
-<div className="step-list">
-<div className="step">
-<span className="step-number">{received ? <CheckCircle weight="fill" /> : "1"}</span>
-<div>
-<strong>Get demo shares</strong>
-<small>One free test share per wallet.</small>
-</div>
-<button onClick={() => write("claimDemoShares")} disabled={!!busy || received || !validContract}>{received ? "Received" : "Get shares"}</button>
-</div>
-<div className="step">
-<span className="step-number">{claimed ? <CheckCircle weight="fill" /> : "2"}</span>
-<div>
-<strong>Unlock the benefit</strong>
-<small>Your balance is checked by the contract.</small>
-</div>
-<button onClick={() => write("claimBenefit", [selected.id])} disabled={!!busy || claimed || balance < selected.minimum || !validContract}>{claimed ? "Unlocked" : "Unlock"}</button>
-</div>
-</div>{!received && <p className="gas-help">You need free test OKB for the two transactions. <a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Get it from the X Layer faucet <ArrowSquareOut size={13} />
-</a>
-</p>}{claimed && <div className="reward-box">
-<span>
-<CheckCircle weight="fill" /> Ownership verified</span>
-<h3>Access unlocked</h3>
-<p>{selected.reward}</p>
-<small>Demo reward content is public onchain. Do not use private codes or links.</small>
-</div>}</section>
+<div className="access-heading"><span className="panel-icon"><ShieldCheck size={25} /></span><span>X Layer access check</span></div>
+<h2>{claimed ? "The door is open." : "Your wallet is the key."}</h2>
+<p>{claimed ? "Your ownership was verified onchain. Continue to the private destination." : `This access pass opens for wallets holding ${amount(selected.minimum)} ${benefitMeta(selected).asset}.`}</p>
+<div className="wallet-snapshot"><div><small>Connected wallet</small><strong>{address ? short(address) : "Not connected"}</strong></div><div><small>Demo balance</small><strong>{address ? `${amount(balance)} ${benefitMeta(selected).asset}` : "—"}</strong></div></div>
+{!address ? <button className="access-action" onClick={connect}><Wallet size={19} /> Connect wallet</button> : !received ? <button className="access-action" onClick={() => write("claimDemoShares")} disabled={!!busy}>Collect demo {benefitMeta(selected).asset}</button> : !claimed ? <button className="access-action" onClick={() => write("claimBenefit", [selected.id])} disabled={!!busy || balance < selected.minimum}><ShieldCheck size={19} /> Verify ownership</button> : unlockedUrl ? <a className="access-action unlocked" href={unlockedUrl} target="_blank" rel="noreferrer">Open your access <ArrowSquareOut size={18} /></a> : <button className="access-action unlocked" onClick={() => revealAccess()} disabled={!!busy}>Reveal my access</button>}
+{!received && address && <p className="gas-help">You need free test OKB for the demo transaction. <a href="https://web3.okx.com/xlayer/faucet" target="_blank" rel="noreferrer">Open faucet <ArrowSquareOut size={13} /></a></p>}
+{claimed && <div className="verified-line"><CheckCircle weight="fill" /> Verified on X Layer</div>}</section>
 </div>
 <div className="proof-row">
 <span>Contract: <a href={`${EXPLORER}/address/${CONTRACT}`} target="_blank" rel="noreferrer">{validContract ? short(CONTRACT) : "Pending deployment"}</a>
@@ -306,20 +321,19 @@ function App() {
 </div>
 </div>
 </div>
-<form className="create-form" onSubmit={(event) => { event.preventDefault(); try { const value = parseUnits(minimum, 18); if (value <= 0n || value > parseUnits("1", 18)) throw new Error("Choose an amount above 0 and no more than 1 dTSLA."); void write("createBenefit", [title.trim(), description.trim(), reward.trim(), value]); } catch (cause) { setError(errorText(cause)); } }}>
+<form className="create-form" onSubmit={(event) => { event.preventDefault(); try { const value = parseUnits(minimum, 18); const destination = new URL(reward.trim()); if (destination.protocol !== "https:") throw new Error("Use a secure HTTPS destination."); if (value <= 0n || value > parseUnits("1", 18)) throw new Error("Choose an amount above 0 and no more than 1 demo share."); void write("createBenefit", [title.trim(), description.trim(), "Private access stored by xPerks", value]); } catch (cause) { setError(errorText(cause)); } }}>
 <label>Benefit name<input required minLength={3} maxLength={80} value={title} onChange={(e) => setTitle(e.target.value)} />
 </label>
 <label>What does the holder get?<textarea required maxLength={320} rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
 </label>
 <div className="form-row">
-<label>Required asset<div className="fixed-input">dTSLA <small>Demo stock</small>
-</div>
+<label>Required demo share<select value={asset} onChange={(e) => setAsset(e.target.value)}>{DEMO_ASSETS.map((item) => <option value={item.symbol} key={item.symbol}>{item.name} · {item.symbol}</option>)}</select>
 </label>
 <label>Minimum balance<input required type="number" min="0.000001" max="1" step="any" value={minimum} onChange={(e) => setMinimum(e.target.value)} />
 </label>
 </div>
-<label>Reward message<textarea required maxLength={500} rows={3} value={reward} onChange={(e) => setReward(e.target.value)} />
-<small>This message is stored publicly onchain. Do not enter a private URL or access code.</small>
+<label>Access destination<input required type="url" maxLength={360} placeholder="https://t.me/your-group" value={reward} onChange={(e) => setReward(e.target.value)} />
+<small>Telegram, Google Drive, Notion, Discord invites, or any secure HTTPS page.</small>
 </label>
 <button className="primary wide" type="submit" disabled={!!busy || !validContract}>{status ? <SpinnerGap className="spin" size={19} /> : <Plus size={18} />} {status || "Publish benefit"}</button>{createdLink && <div className="created-box">
 <CheckCircle weight="fill" />
@@ -373,7 +387,7 @@ function App() {
 <Gift size={31} />
 </div>
 </div>
-<div className="float-caption">01 / Connect wallet<br />02 / Verify balance<br />03 / Unlock benefit</div>
+<div className="float-caption">A shareable access page.<br />Verified by the wallet itself.</div>
 </div>
 </section>
 <section className="benefits-section" id="benefits">
@@ -387,12 +401,12 @@ function App() {
 </a>
 </div>
 <div className="benefit-list">{benefits.length ? benefits.map((benefit) => <button className="benefit-row" key={benefit.id.toString()} onClick={() => openBenefit(benefit)}>
-<span className="row-symbol">dTSLA</span>
+<span className="row-symbol">{benefitMeta(benefit).asset}</span>
 <span className="row-text">
 <strong>{benefit.title}</strong>
 <small>{benefit.description}</small>
 </span>
-<span className="row-min">Hold {amount(benefit.minimum)} dTSLA</span>
+<span className="row-min">Hold {amount(benefit.minimum)} {benefitMeta(benefit).asset}</span>
 <ArrowRight size={21} />
 </button>) : <div className="empty-benefits">
 <Gift size={29} />
@@ -435,7 +449,7 @@ function App() {
 }
 
 function ExplorePage({ benefits, openBenefit, create }: { benefits: Benefit[]; openBenefit: (benefit: Benefit) => void; create: () => void }) {
-  return <main className="page-shell"><section className="page-hero"><p className="intro-tag">Explore xPerks</p><h1>What you hold<br />should open doors.</h1><p>Discover experiences made for onchain shareholders. Every perk has its own page, rule, and shareable link.</p><button className="primary" onClick={create}>Create a perk <ArrowRight size={18} /></button></section><section className="perk-grid">{benefits.map((benefit, index) => <button className="perk-card" key={benefit.id.toString()} onClick={() => openBenefit(benefit)}><span className="perk-index">0{index + 1}</span><div className="perk-symbol">dTSLA</div><div><p>Verified holder access</p><h2>{benefit.title}</h2><span>{benefit.description}</span></div><footer><strong>Hold {amount(benefit.minimum)} dTSLA</strong><ArrowRight size={20} /></footer></button>)}</section></main>;
+  return <main className="page-shell"><section className="page-hero"><p className="intro-tag">Explore xPerks</p><h1>What you hold<br />should open doors.</h1><p>Discover experiences made for onchain shareholders. Every perk has its own page, rule, and shareable link.</p><button className="primary" onClick={create}>Create a perk <ArrowRight size={18} /></button></section><section className="perk-grid">{benefits.map((benefit, index) => <button className="perk-card" key={benefit.id.toString()} onClick={() => openBenefit(benefit)}><span className="perk-index">0{index + 1}</span><div className="perk-symbol">{benefitMeta(benefit).asset}</div><div><p>Verified holder access</p><h2>{benefit.title}</h2><span>{benefit.description}</span></div><footer><strong>Hold {amount(benefit.minimum)} {benefitMeta(benefit).asset}</strong><ArrowRight size={20} /></footer></button>)}</section></main>;
 }
 
 function HowPage({ create }: { create: () => void }) {
@@ -451,6 +465,7 @@ function errorText(cause: unknown) {
   const error = cause as { shortMessage?: string; message?: string; code?: number };
   if (error?.code === 4001) return "Wallet request rejected. You can try again when ready.";
   const message = error?.shortMessage || error?.message || "Something went wrong. Try again.";
+  if (/unrecognized chain|unknown chain|chain.*not added/i.test(message)) return "Your wallet could not add X Layer automatically. Open its network settings, add X Layer Testnet, then try again.";
   if (/insufficient funds/i.test(message)) return "This wallet needs free test OKB for gas. Use the X Layer faucet and try again.";
   return message.split("\n")[0].slice(0, 240);
 }
