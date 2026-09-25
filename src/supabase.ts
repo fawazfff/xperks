@@ -1,33 +1,71 @@
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "https://rfuxxeiceieqffudwyaw.supabase.co";
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_WDGuRMl4VT4ExCyffLA-3w_IfX0l0i9";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "https://ajqukplphetzavnfcxio.supabase.co";
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_p7M3OA6dClrOTRM5sKHM2A_c8kjIPvu";
+const API = `${SUPABASE_URL}/functions/v1/xperks-api`;
 
-export async function perkIdForSlug(slug: string): Promise<bigint | null> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/perks?select=benefit_id&slug=eq.${encodeURIComponent(slug)}&limit=1`, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+export type Campaign = {
+  id: number;
+  contract_address: `0x${string}`;
+  onchain_benefit_id: number;
+  creator_wallet: string;
+  asset_symbol: string;
+  title: string;
+  description: string;
+  minimum_display: number;
+  status: "published" | "paused";
+  created_at: string;
+};
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API}${path}`, {
+    ...init,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
   });
-  if (!response.ok) throw new Error("Could not resolve perk link");
-  const rows = await response.json() as Array<{ benefit_id: number }>;
-  return rows[0] ? BigInt(rows[0].benefit_id) : null;
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "xPerks could not complete this request.");
+  return result as T;
 }
 
-export async function perkAssets(ids: bigint[]): Promise<Record<string, string>> {
-  if (!ids.length) return {};
-  const values = ids.map(String).join(",");
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/perks?select=benefit_id,asset_symbol&benefit_id=in.(${values})`, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
-  });
-  if (!response.ok) return {};
-  const rows = await response.json() as Array<{ benefit_id: number; asset_symbol: string }>;
-  return Object.fromEntries(rows.map((row) => [String(row.benefit_id), row.asset_symbol]));
+export async function listCampaigns() {
+  return (await request<{ campaigns: Campaign[] }>("/campaigns")).campaigns;
 }
 
-export async function callPerkAccess(payload: Record<string, unknown>): Promise<{ path?: string; destination?: string }> {
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/perk-access`, {
+export async function getCampaign(id: number) {
+  return (await request<{ campaign: Campaign }>(`/campaigns/${id}`)).campaign;
+}
+
+export async function getActiveContract() {
+  return (await request<{ contract: `0x${string}` | null }>("/active-contract")).contract;
+}
+
+export async function createCampaign(payload: Record<string, unknown>) {
+  return request<{ campaignId: number; path: string }>("/campaigns", {
     method: "POST",
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Could not complete the access request");
-  return result;
+}
+
+export async function unlockCampaign(payload: Record<string, unknown>) {
+  return request<{ destination: string }>("/unlock", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getDashboard(payload: Record<string, unknown>) {
+  return (await request<{ campaigns: Campaign[] }>("/dashboard", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })).campaigns;
+}
+
+export async function updateCampaignDestination(id: number, payload: Record<string, unknown>) {
+  return request<{ ok: boolean }>(`/campaigns/${id}/destination`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
