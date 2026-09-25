@@ -5,7 +5,7 @@ import { createPublicClient, createWalletClient, custom, formatUnits, http, isAd
 import { xlayerMainnet, xlayerTestnet } from "./chain";
 import "./styles.css";
 
-const CONTRACT = (import.meta.env.VITE_XPERKS_CONTRACT || "") as Address;
+const CONTRACT = (import.meta.env.VITE_XPERKS_CONTRACT || "0x56bdbf41ab0eb0fa450dbe3774504b09a034db05") as Address;
 const RPC = import.meta.env.VITE_XLAYER_RPC || "https://testrpc.xlayer.tech/terigon";
 const EXPLORER = "https://www.okx.com/web3/explorer/xlayer-test";
 const abi = [
